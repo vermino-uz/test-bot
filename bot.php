@@ -1,8 +1,8 @@
 <?php
 
 // Bot configuration
-define("API_KEY", "6807107553:AAH-A618zSsZc7gjz33s9cGPXcAFJw4tyhM");
-$group_id = "-1002202768116";
+define("API_KEY", "6470914493:AAEZ_vKH5NZJWYl_qHpkxU1RIv8hVA6IsQk");
+
 
 // Database configuration
 define("DB_HOST", "localhost");
