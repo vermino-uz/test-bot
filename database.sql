@@ -38,3 +38,14 @@ CREATE TABLE user_attempts (
     started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (quiz_id) REFERENCES quizzes(quiz_id)
 );
+
+-- User states table
+CREATE TABLE user_states (
+    user_id BIGINT PRIMARY KEY,
+    state VARCHAR(50),
+    quiz_id INT,
+    current_question TEXT,
+    options TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (quiz_id) REFERENCES quizzes(quiz_id)
+);

@@ -3,7 +3,6 @@
 // Bot configuration
 define("API_KEY", "6470914493:AAEZ_vKH5NZJWYl_qHpkxU1RIv8hVA6IsQk");
 
-
 // Database configuration
 define("DB_HOST", "localhost");
 define("DB_USER", "testbot");
@@ -29,26 +28,55 @@ function bot($method, $datas = []) {
     }
 }
 
+// Get user state from database
+function get_user_state($user_id) {
+    global $connect;
+    $result = mysqli_query($connect, "SELECT * FROM user_states WHERE user_id = $user_id");
+    return mysqli_fetch_assoc($result);
+}
+
+// Update user state in database
+function update_user_state($user_id, $state, $quiz_id = null, $current_question = null, $options = null) {
+    global $connect;
+    $state = mysqli_real_escape_string($connect, $state);
+    $current_question = $current_question ? "'" . mysqli_real_escape_string($connect, $current_question) . "'" : "NULL";
+    $options = $options ? "'" . mysqli_real_escape_string($connect, json_encode($options)) . "'" : "NULL";
+    $quiz_id = $quiz_id ?: "NULL";
+
+    mysqli_query($connect, "INSERT INTO user_states (user_id, state, quiz_id, current_question, options) 
+                           VALUES ($user_id, '$state', $quiz_id, $current_question, $options)
+                           ON DUPLICATE KEY UPDATE 
+                           state = '$state',
+                           quiz_id = $quiz_id,
+                           current_question = $current_question,
+                           options = $options");
+}
+
+// Clear user state
+function clear_user_state($user_id) {
+    global $connect;
+    mysqli_query($connect, "DELETE FROM user_states WHERE user_id = $user_id");
+}
+
 // Get updates from Telegram
 $update = json_decode(file_get_contents('php://input'), true);
 
 // Handle both messages and callback queries
 if (isset($update['message'])) {
     $message = $update['message'];
-    $message_id = $message['message_id'];
     $chat_id = $message['chat']['id'];
     $text = $message['text'] ?? '';
-    $from = $message['from'];
-    $user_id = $from['id'];
-    $first_name = $from['first_name'] ?? '';
-    $last_name = $from['last_name'] ?? '';
-    $username = $from['username'] ?? '';
+    $user_id = $message['from']['id'];
+    $first_name = $message['from']['first_name'] ?? '';
+    $last_name = $message['from']['last_name'] ?? '';
+    $username = $message['from']['username'] ?? '';
     
     // Check if user is admin
     $admin_check = mysqli_query($connect, "SELECT * FROM admins WHERE user_id = $user_id");
     $is_admin = mysqli_num_rows($admin_check) > 0;
 
     if ($text === '/start') {
+        clear_user_state($user_id);
         bot('sendMessage', [
             'chat_id' => $chat_id,
             'text' => "Welcome to the Quiz Bot!\n" .
@@ -61,10 +89,7 @@ if (isset($update['message'])) {
         if ($text === '/newquiz') {
             mysqli_query($connect, "INSERT INTO quizzes (admin_id) VALUES ($user_id)");
             $quiz_id = mysqli_insert_id($connect);
-            $_SESSION['quiz_creation'][$user_id] = [
-                'step' => 'title',
-                'quiz_id' => $quiz_id
-            ];
+            update_user_state($user_id, 'waiting_title', $quiz_id);
             
             bot('sendMessage', [
                 'chat_id' => $chat_id,
@@ -72,69 +97,66 @@ if (isset($update['message'])) {
             ]);
         }
         // Handle quiz creation process
-        elseif (isset($_SESSION['quiz_creation'][$user_id])) {
-            $creation = $_SESSION['quiz_creation'][$user_id];
-            
-            switch ($creation['step']) {
-                case 'title':
-                    mysqli_query($connect, "UPDATE quizzes SET title = '" . mysqli_real_escape_string($connect, $text) . "' WHERE quiz_id = {$creation['quiz_id']}");
-                    $_SESSION['quiz_creation'][$user_id]['step'] = 'question';
-                    
-                    bot('sendMessage', [
-                        'chat_id' => $chat_id,
-                        'text' => "Send your question text:"
-                    ]);
-                    break;
-                
-                case 'question':
-                    $_SESSION['quiz_creation'][$user_id]['current_question'] = $text;
-                    $_SESSION['quiz_creation'][$user_id]['step'] = 'options';
-                    
-                    bot('sendMessage', [
-                        'chat_id' => $chat_id,
-                        'text' => "Send the 4 options in this format:\nA) Option1\nB) Option2\nC) Option3\nD) Option4"
-                    ]);
-                    break;
-                
-                case 'options':
-                    $options = explode("\n", $text);
-                    if (count($options) === 4) {
-                        $_SESSION['quiz_creation'][$user_id]['options'] = $options;
-                        $_SESSION['quiz_creation'][$user_id]['step'] = 'correct';
+        else {
+            $state = get_user_state($user_id);
+            if ($state) {
+                switch ($state['state']) {
+                    case 'waiting_title':
+                        mysqli_query($connect, "UPDATE quizzes SET title = '" . mysqli_real_escape_string($connect, $text) . "' WHERE quiz_id = {$state['quiz_id']}");
+                        update_user_state($user_id, 'waiting_question', $state['quiz_id']);
                         
                         bot('sendMessage', [
                             'chat_id' => $chat_id,
-                            'text' => "Which option is correct? (Send A, B, C, or D)"
+                            'text' => "Send your question text:"
                         ]);
-                    }
-                    break;
-                
-                case 'correct':
-                    if (in_array(strtoupper($text), ['A', 'B', 'C', 'D'])) {
-                        $creation = $_SESSION['quiz_creation'][$user_id];
-                        $question = $creation['current_question'];
-                        $options = $creation['options'];
-                        $correct = strtoupper($text);
-                        
-                        mysqli_query($connect, "INSERT INTO questions (quiz_id, question_text, option_a, option_b, option_c, option_d, correct_option) 
-                                             VALUES ({$creation['quiz_id']}, 
-                                                     '" . mysqli_real_escape_string($connect, $question) . "',
-                                                     '" . mysqli_real_escape_string($connect, $options[0]) . "',
-                                                     '" . mysqli_real_escape_string($connect, $options[1]) . "',
-                                                     '" . mysqli_real_escape_string($connect, $options[2]) . "',
-                                                     '" . mysqli_real_escape_string($connect, $options[3]) . "',
-                                                     '$correct')");
-                        
-                        $quiz_link = "https://t.me/" . bot('getMe')->result->username . "?start=quiz_{$creation['quiz_id']}";
+                        break;
+                    
+                    case 'waiting_question':
+                        update_user_state($user_id, 'waiting_options', $state['quiz_id'], $text);
                         
                         bot('sendMessage', [
                             'chat_id' => $chat_id,
-                            'text' => "Question added! Quiz link:\n$quiz_link\n\nSend another question or /finish to complete the quiz."
+                            'text' => "Send the 4 options in this format:\nA) Option1\nB) Option2\nC) Option3\nD) Option4"
                         ]);
-                        
-                        $_SESSION['quiz_creation'][$user_id]['step'] = 'question';
-                    }
-                    break;
+                        break;
+                    
+                    case 'waiting_options':
+                        $options = explode("\n", $text);
+                        if (count($options) === 4) {
+                            update_user_state($user_id, 'waiting_correct', $state['quiz_id'], $state['current_question'], $options);
+                            
+                            bot('sendMessage', [
+                                'chat_id' => $chat_id,
+                                'text' => "Which option is correct? (Send A, B, C, or D)"
+                            ]);
+                        }
+                        break;
+                    
+                    case 'waiting_correct':
+                        if (in_array(strtoupper($text), ['A', 'B', 'C', 'D'])) {
+                            $options = json_decode($state['options']);
+                            $correct = strtoupper($text);
+                            
+                            mysqli_query($connect, "INSERT INTO questions (quiz_id, question_text, option_a, option_b, option_c, option_d, correct_option) 
+                                                 VALUES ({$state['quiz_id']}, 
+                                                         '" . mysqli_real_escape_string($connect, $state['current_question']) . "',
+                                                         '" . mysqli_real_escape_string($connect, $options[0]) . "',
+                                                         '" . mysqli_real_escape_string($connect, $options[1]) . "',
+                                                         '" . mysqli_real_escape_string($connect, $options[2]) . "',
+                                                         '" . mysqli_real_escape_string($connect, $options[3]) . "',
+                                                         '$correct')");
+                            
+                            $quiz_link = "https://t.me/" . bot('getMe')->result->username . "?start=quiz_{$state['quiz_id']}";
+                            
+                            bot('sendMessage', [
+                                'chat_id' => $chat_id,
+                                'text' => "Question added! Quiz link:\n$quiz_link\n\nSend another question or /finish to complete the quiz."
+                            ]);
+                            
+                            update_user_state($user_id, 'waiting_question', $state['quiz_id']);
+                        }
+                        break;
+                }
             }
         }
     }
